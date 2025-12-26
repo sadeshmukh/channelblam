@@ -19,9 +19,10 @@ from db import (
 
 db_client = None  # main
 ADMIN_ID = None
+BOT_USER_ID = None
 
 
-def _require_env(name: str) -> str:
+def _env(name: str) -> str:
     if not (value := os.getenv(name)):
         raise RuntimeError(f"Missing required env var: {name}")
     return value
@@ -33,7 +34,7 @@ logging.basicConfig(
 )
 
 app = AsyncApp(
-    token=_require_env("SLACK_BOT_TOKEN"),
+    token=_env("SLACK_BOT_TOKEN"),
     signing_secret=os.getenv("SLACK_SIGNING_SECRET"),
 )
 
@@ -42,6 +43,31 @@ def _db_client():
     if db_client is None:
         raise RuntimeError("Database client not initialized yet")
     return db_client
+
+
+async def _is_channel_manager(channel_id: str, user_id: str | None, logger) -> bool:
+    if not user_id:
+        return False
+    cursor = None
+    while True:
+        try:
+            result = await app.client.conversations_members(
+                channel=channel_id,
+                cursor=cursor,
+                limit=1000,  # this limit is quite meaningless
+            )
+        except SlackApiError as exc:
+            logger.warning("Failed to fetch channel managers", exc_info=exc)
+            break
+
+        members = result.get("members", []) or []
+        if user_id in members:
+            return True
+
+        cursor = result.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+    return False
 
 
 _USER_ID_RE = re.compile(r"^[UW][A-Z0-9]{2,}$")
@@ -162,9 +188,9 @@ async def handle_member_joined_channel(body, say, logger):
     # remove perms only on the authed user, so we've got to do the whole invite shenanigans
     if user_id == body.get("authorizations", [{}])[0].get("user_id"):  # self check
         try:
-            await AsyncWebClient(
-                token=_require_env("SLACK_BOT_TOKEN")
-            ).conversations_invite(channel=channel_id, users=str(ADMIN_ID))
+            await AsyncWebClient(token=_env("SLACK_BOT_TOKEN")).conversations_invite(
+                channel=channel_id, users=str(ADMIN_ID)
+            )
         except SlackApiError as exc:
             logger.warning("Failed to invite admin to channel", exc_info=exc)
 
@@ -181,27 +207,80 @@ async def handle_member_joined_channel(body, say, logger):
 
 async def _kick_if_possible(channel_id: str, user_id: str, logger) -> None:
     try:
-        token = None
-        # token = await get_user_token(client=_db_client())
-        fallback_token = os.getenv("SLACK_PERSONAL_TOKEN") or _require_env(
-            "SLACK_BOT_TOKEN"
-        )
-        client = AsyncWebClient(token=token or fallback_token)
-        await client.conversations_kick(channel=channel_id, user=user_id)
+        await AsyncWebClient(
+            token=os.getenv("SLACK_PERSONAL_TOKEN")
+        ).conversations_kick(channel=channel_id, user=user_id)
     except SlackApiError as exc:
+        if exc.response.get("error") == "not_in_channel":
+            return
         logger.warning("Kick failed", exc_info=exc)
 
 
+async def _invite_user(
+    channel_id: str, user_id: str, logger, *, token: str | None = None
+):
+    try:
+        token_to_use = token or _env(
+            "SLACK_BOT_TOKEN"
+        )  # only for invites! when kicking, it has to use personal token
+        client = AsyncWebClient(token=token_to_use)
+        await client.conversations_invite(channel=channel_id, users=str(user_id))
+    except SlackApiError as exc:
+        if exc.response.get("error") == "already_in_channel":
+            return
+        logger.warning("Invite failed", exc_info=exc)
+
+
+async def _invite_bot(channel_id: str, logger) -> None:
+    admin_token = _env("SLACK_PERSONAL_TOKEN")
+    await _invite_user(channel_id, str(BOT_USER_ID), logger, token=admin_token)
+
+
+async def _resolve_bot_user_id(logger) -> str:
+    try:
+        auth_info = await app.client.auth_test()
+        user_id = auth_info.get("user_id")
+        if not user_id:  # otherwise linter complains
+            raise Exception("Unable to resolve bot user id")
+        logger.info(f"Bot user id resolved as {user_id}")
+        return user_id
+    except SlackApiError as exc:
+        logger.error("auth_test failed", exc_info=exc)
+        raise
+
+
 async def _start_socket_mode():
-    handler = AsyncSocketModeHandler(app, _require_env("SLACK_APP_TOKEN"))
+    handler = AsyncSocketModeHandler(app, _env("SLACK_APP_TOKEN"))
     await handler.start_async()
+
+
+@app.event("member_left_channel")
+async def handle_member_left_channel(body, logger):
+    event = body.get("event", {})
+    channel_id = event.get("channel")
+    user_id = event.get("user")
+    actor_id = event.get("actor_id")
+    if not channel_id or not user_id:
+        return
+
+    if await _is_channel_manager(channel_id, actor_id, logger):
+        return
+
+    if BOT_USER_ID and user_id == BOT_USER_ID:
+        await _invite_bot(channel_id, logger)
+        return
+
+    if user_id == ADMIN_ID:
+        await _invite_user(channel_id, str(ADMIN_ID), logger)
 
 
 async def main() -> None:
     global db_client
     global ADMIN_ID
+    global BOT_USER_ID
     db_client = get_client()
-    ADMIN_ID = _require_env("ADMIN_ID")
+    ADMIN_ID = str(_env("ADMIN_ID"))
+    BOT_USER_ID = str(await _resolve_bot_user_id(logging.getLogger(__name__)))
     await ensure_schema(db_client)
     await asyncio.gather(_start_socket_mode())
 
