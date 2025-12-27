@@ -3,6 +3,7 @@ import logging
 import os
 import re
 
+import aiohttp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.errors import SlackApiError
@@ -207,6 +208,12 @@ async def handle_member_joined_channel(body, say, logger):
 
 async def _kick_if_possible(channel_id: str, user_id: str, logger) -> None:
     try:
+        await _kick_xoxc(channel_id, user_id, logger)
+        return
+    except Exception as exc:
+        logger.warning("Kick xoxc failed", exc_info=exc)
+
+    try:
         await AsyncWebClient(
             token=os.getenv("SLACK_PERSONAL_TOKEN")
         ).conversations_kick(channel=channel_id, user=user_id)
@@ -214,6 +221,20 @@ async def _kick_if_possible(channel_id: str, user_id: str, logger) -> None:
         if exc.response.get("error") == "not_in_channel":
             return
         logger.warning("Kick failed", exc_info=exc)
+
+
+async def _kick_xoxc(channel_id: str, user_id: str, logger) -> None:
+    token_xoxc = _env("SLACK_XOXC")
+    url = "https://hackclub.enterprise.slack.com/api/conversations.kick?slack_route=E09V59WQY1E%3AE09V59WQY1E"
+    async with aiohttp.ClientSession() as session:
+        formdata = {"channel": channel_id, "user": user_id, "token": token_xoxc}
+        cookie = f"d={_env('SLACK_XOXD').replace('%2F', '/').replace('%3D', '=')};"
+        headers = {"Cookie": cookie}
+        session.headers.update(headers)
+        async with session.post(url, data=formdata) as resp:
+            data = await resp.json()
+            if not data.get("ok"):
+                logger.warning(f"Kick xoxc failed: {data}")
 
 
 async def _invite_user(
