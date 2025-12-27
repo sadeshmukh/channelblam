@@ -210,28 +210,25 @@ async def handle_blam(ack, respond, command, logger):
                         break
 
                 whitelisted = set(await list_whitelisted(channel_id, client=client))
+                semaphore = asyncio.Semaphore(20)
 
-                to_kick = 0
-                for user_id in users:
-                    if user_id == ADMIN_ID:
-                        continue
+                async def needs_kick(user_id: str) -> int:
+                    if user_id == ADMIN_ID or user_id in whitelisted:
+                        return 0
+                    async with semaphore:
+                        is_bot = await user_is_bot(user_id, app.client, logger)
+                    if is_bot or levelnum == 0:
+                        return 0
+                    if levelnum == 1:
+                        async with semaphore:
+                            return 1 if not await is_idved(user_id, logger) else 0
+                    async with semaphore:
+                        return 1 if not await is_idved_under18(user_id, logger) else 0
 
-                    if user_id in whitelisted:
-                        continue
-
-                    is_bot = await user_is_bot(user_id, app.client, logger)
-                    if is_bot:
-                        continue
-
-                    if levelnum == 0:
-                        continue
-
-                    if levelnum == 1 and not await is_idved(user_id, logger):
-                        to_kick += 1
-                        continue
-
-                    if levelnum == 2 and not await is_idved_under18(user_id, logger):
-                        to_kick += 1
+                kick_flags = await asyncio.gather(
+                    *(needs_kick(user_id) for user_id in users)
+                )
+                to_kick = sum(kick_flags)
 
                 await respond(
                     f"{to_kick} users would be kicked if IDV requirement were set to {level}."

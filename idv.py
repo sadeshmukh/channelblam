@@ -1,6 +1,7 @@
 import aiohttp
 import asyncio
 import logging
+import os
 import cachetools
 from cachetools.keys import hashkey
 
@@ -57,9 +58,37 @@ async def user_is_bot(userid: str, client, logger) -> bool:
         return True
     if userid in usercache:
         return False
+
+    async def _user_is_bot_xoxc() -> bool | None:
+        token_xoxc = os.getenv("SLACK_XOXC")
+        xoxd_raw = os.getenv("SLACK_XOXD")
+        if not token_xoxc or not xoxd_raw:
+            return None
+        cookie = f"d={xoxd_raw.replace('%2F', '/').replace('%3D', '=')};"
+        url = "https://slack.com/api/users.info"
+        async with aiohttp.ClientSession(headers={"Cookie": cookie}) as session:
+            try:
+                async with session.post(
+                    url, data={"user": userid, "token": token_xoxc}
+                ) as resp:
+                    data = await resp.json()
+                    if not data.get("ok"):
+                        logger.warning(
+                            "users.info xoxc failed", extra={"error": data.get("error")}
+                        )
+                        return None
+                    return bool(data.get("user", {}).get("is_bot", False))
+            except Exception as exc:
+                logger.warning("users.info xoxc exception", exc_info=exc)
+                return None
+
     try:
-        userinfo = await client.users_info(user=userid)
-        is_bot = userinfo.get("user", {}).get("is_bot", False)
+        is_bot_xoxc = await _user_is_bot_xoxc()
+        if is_bot_xoxc is None:
+            userinfo = await client.users_info(user=userid)
+            is_bot = userinfo.get("user", {}).get("is_bot", False)
+        else:
+            is_bot = is_bot_xoxc
         if is_bot:
             botcache.add(userid)
         else:
