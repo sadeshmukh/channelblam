@@ -30,14 +30,14 @@ async def ensure_schema(client: Optional[sqlite3.Connection] = None) -> None:
                 );
                 """
             )
-            db.execute(
+            db.execute(  # idv_required_level: 0, 1, 2 (none, all IDV, IDV <18)
                 """
-                CREATE TABLE IF NOT EXISTS oauth_tokens (
-                    team_id TEXT PRIMARY KEY,
-                    user_token TEXT NOT NULL,
-                    installer_user_id TEXT,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
+                CREATE TABLE IF NOT EXISTS channel_filters (
+                    channel_id TEXT NOT NULL,
+                    idv_required_level INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (channel_id)
+                )
+
                 """
             )
             db.commit()
@@ -45,10 +45,50 @@ async def ensure_schema(client: Optional[sqlite3.Connection] = None) -> None:
     await asyncio.to_thread(_create)
 
 
+async def get_idv_required_level(
+    channel_id: str, client: Optional[sqlite3.Connection] = None
+) -> int:
+    db = client or get_client()
+
+    def _query():
+        with _db_lock:
+            cur = db.execute(
+                "SELECT idv_required_level FROM channel_filters WHERE channel_id = ?;",
+                (channel_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                return row["idv_required_level"]
+            return 0
+
+    return await asyncio.to_thread(_query)
+
+
+async def set_idv_required_level(
+    channel_id: str,
+    level: int,
+    client: Optional[sqlite3.Connection] = None,
+) -> None:
+    db = client or get_client()
+
+    def _exec():
+        with _db_lock:
+            db.execute(
+                """
+                INSERT INTO channel_filters (channel_id, idv_required_level)
+                VALUES (?, ?)
+                ON CONFLICT(channel_id) DO UPDATE SET idv_required_level=excluded.idv_required_level;
+                """,
+                (channel_id, level),
+            )
+            db.commit()
+
+    await asyncio.to_thread(_exec)
+
+
 async def add_blam(
     channel_id: str,
     user_id: str,
-    blammed_by: str | None = None,
     client: Optional[sqlite3.Connection] = None,
 ) -> None:
     db = client or get_client()
@@ -59,17 +99,6 @@ async def add_blam(
                 "INSERT OR IGNORE INTO channel_blammed (channel_id, user_id) VALUES (?, ?);",
                 (channel_id, user_id),
             )
-            if blammed_by:
-                db.execute(
-                    """
-                    INSERT INTO channel_managers (channel_id, manager_user_id)
-                    VALUES (?, ?)
-                    ON CONFLICT(channel_id) DO UPDATE SET
-                        manager_user_id=excluded.manager_user_id,
-                        updated_at=CURRENT_TIMESTAMP;
-                    """,
-                    (channel_id, blammed_by),
-                )
             db.commit()
 
     await asyncio.to_thread(_exec)

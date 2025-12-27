@@ -15,7 +15,11 @@ from db import (
     get_client,
     list_blammed,
     remove_blam,
+    get_idv_required_level,
+    set_idv_required_level,
 )
+
+from idv import idv_notfound, idvstatus, is_idved, is_idved_under18
 
 db_client = None  # main
 ADMIN_ID = None
@@ -88,9 +92,11 @@ async def handle_blam(ack, respond, command, logger):
     await ack()
     channel_id = command.get("channel_id")
 
+    # region Authorization check
     actor_id = command.get("user_id")
     cursor = None
     found = False
+
     while True:
         try:
             result = await app.client.conversations_members(
@@ -110,13 +116,17 @@ async def handle_blam(ack, respond, command, logger):
         await respond("You are not authorized to use this command.")
         return
 
+    # endregion
+
     text = (command.get("text") or "").strip()
     if not channel_id:
         await respond("Cannot determine channel.")
         return
     tokens = text.split()
     if not tokens:
-        await respond("Usage: /blam @user | /blam [add/remove] @user | /blam list")
+        await respond(
+            "Usage: /blam @user | /blam remove @user | /blam list | /blam idv"
+        )
         return
 
     if channel_id.startswith("C"):
@@ -143,6 +153,83 @@ async def handle_blam(ack, respond, command, logger):
         except Exception as exc:
             logger.error("Failed to list blammed", exc_info=exc)
             await respond("Error listing blammed users.")
+        return
+    if first == "idv":
+        level = tokens[1].lower() if len(tokens) > 1 else "required"
+
+        if level not in {"required", "under18", "off"}:
+            await respond(
+                "Usage: /blam idv [required/under18/off], defaults to required"
+            )
+            return
+
+        match level:
+            case "off":
+                levelnum = 0
+            case "required":
+                levelnum = 1
+            case "under18":
+                levelnum = 2
+            case default:
+                levelnum = 1
+
+        old_level = await get_idv_required_level(channel_id, client=_db_client()) or 0
+        if old_level == levelnum:
+            await respond(
+                f"IDV requirement is already set to {level} for this channel."
+            )
+            return
+
+        try:
+            await set_idv_required_level(channel_id, levelnum, client=_db_client())
+            await respond(f"Set IDV requirement to {level} for this channel.")
+        except Exception as exc:
+            logger.error("Failed to set IDV requirement", exc_info=exc)
+            await respond("Error setting IDV requirement.")
+
+        if old_level == 0 and levelnum > 0:
+            # newly enabled, kick blammed users
+            try:
+                client = _db_client()
+                toblam = []
+                # list channel
+                users = []
+                cursor = None
+                while True:
+                    result = await app.client.conversations_members(
+                        channel=channel_id, cursor=cursor, limit=1000
+                    )
+                    members = result.get("members", []) or []
+                    users.extend(members)
+                    cursor = result.get("response_metadata", {}).get("next_cursor")
+                    if not cursor:
+                        break
+                for user_id in users:
+                    if await idvstatus(user_id, logger) == "not_found":
+                        continue
+
+                    if user_id == ADMIN_ID:
+                        continue
+                    if levelnum == 1 and not await is_idved(user_id, logger):
+                        toblam.append(user_id)
+                        continue
+                    if levelnum == 2 and not await is_idved_under18(user_id, logger):
+                        toblam.append(user_id)
+                        continue
+                # for user_id in toblam:
+                #     await _kick_if_possible(channel_id, user_id, logger)
+                await asyncio.gather(
+                    *(
+                        _kick_if_possible(channel_id, user_id, logger)
+                        for user_id in toblam
+                    )
+                )
+                logger.info(
+                    f"Kicked {len(toblam)} blammed users from channel {channel_id} due to IDV requirement change"
+                )
+            except Exception as exc:
+                logger.error("Failed to kick blammed users on IDV change", exc_info=exc)
+
         return
 
     action = "add"
@@ -171,7 +258,7 @@ async def handle_blam(ack, respond, command, logger):
 
     try:
         client = _db_client()
-        await add_blam(channel_id, target_user, blammed_by=actor_id, client=client)
+        await add_blam(channel_id, target_user, client=client)
         await _kick_if_possible(channel_id, target_user, logger)
         await respond(f"Blammed <@{target_user}> in this channel.")
     except Exception as exc:
@@ -194,9 +281,25 @@ async def handle_member_joined_channel(body, say, logger):
         except SlackApiError as exc:
             logger.warning("Failed to invite admin to channel", exc_info=exc)
 
-    if user_id == ADMIN_ID or not user_id in await list_blammed(
+    # TODO: send message to channel if channel is invitelocked
+
+    blam_ok = user_id == ADMIN_ID or not user_id in await list_blammed(
         channel_id, client=client
-    ):
+    )
+    # idv
+
+    if (level := await get_idv_required_level(channel_id, client=client)) and level > 0:
+        idv_ok = False
+        logger.info("hi")
+        if await idv_notfound(user_id, logger):
+            logger.info("testing idv notfound, skipping kick for bot")
+            return
+        if level == 1:
+            idv_ok = await is_idved(user_id, logger)
+        elif level == 2:
+            idv_ok = await is_idved_under18(user_id, logger)
+
+    if blam_ok and idv_ok:
         return
     try:
         await _kick_if_possible(channel_id, user_id, logger)
