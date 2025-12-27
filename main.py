@@ -11,11 +11,14 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from db import (
     add_blam,
+    add_whitelist,
     ensure_schema,
     get_client,
     list_blammed,
+    list_whitelisted,
     remove_blam,
     get_idv_required_level,
+    remove_whitelist,
     set_idv_required_level,
 )
 
@@ -208,7 +211,9 @@ async def handle_blam(ack, respond, command, logger):
                     is_bot = await user_is_bot(user_id, app.client, logger)
                     if is_bot:
                         continue
-
+                    is_whitelisted = await list_whitelisted(channel_id, client=client)
+                    if user_id in is_whitelisted:
+                        continue
                     if user_id == ADMIN_ID:
                         continue
                     if levelnum == 1 and not await is_idved(user_id, logger):
@@ -231,6 +236,71 @@ async def handle_blam(ack, respond, command, logger):
             except Exception as exc:
                 logger.error("Failed to kick blammed users on IDV change", exc_info=exc)
 
+        return
+    if first == "whitelist":
+        if len(tokens) < 2:
+            await respond(
+                "Usage: /blam whitelist @user | /blam whitelist remove @user | /blam whitelist channel"
+            )
+            return
+        second = tokens[1].lower() if len(tokens) > 1 else ""
+        if second == "channel":
+            # mark all users in channel as whitelisted
+            try:
+                client = _db_client()
+                users = []
+                cursor = None
+                while True:
+                    result = await app.client.conversations_members(
+                        channel=channel_id, cursor=cursor, limit=1000
+                    )
+                    members = result.get("members", []) or []
+                    users.extend(members)
+                    cursor = result.get("response_metadata", {}).get("next_cursor")
+                    if not cursor:
+                        break
+                for user_id in users:
+                    await remove_blam(channel_id, user_id, client=client)
+                    await add_whitelist(channel_id, user_id, client=client)
+                await respond(f"Whitelisted all users currently in the channel.")
+            except Exception as exc:
+                logger.error("Failed to whitelist channel", exc_info=exc)
+                await respond("Error whitelisting channel.")
+            return
+
+        if second == "remove":
+            # remove whitelist for given user
+            if len(tokens) < 3:
+                await respond(
+                    "Please mention a user, e.g., /blam whitelist remove @user"
+                )
+                return
+            user_id = tokens[2].split("|", 1)[0] if len(tokens) > 2 else ""
+
+            if not _USER_ID_RE.match(user_id):
+                await respond(
+                    "Please mention a user, e.g., /blam whitelist remove @user"
+                )
+                return
+            try:
+                client = _db_client()
+                await remove_whitelist(channel_id, user_id, client=client)
+                await respond(f"Removed whitelist for <@{user_id}> in this channel.")
+            except Exception as exc:
+                logger.error("Failed to remove whitelist", exc_info=exc)
+                await respond("Error removing whitelist.")
+        user_id = second.split("|", 1)[0] if len(tokens) > 1 else ""
+        if not _USER_ID_RE.match(user_id):
+            await respond("Please mention a user, e.g., /blam whitelist @user")
+            return
+        try:
+            client = _db_client()
+            await remove_blam(channel_id, user_id, client=client)
+            await add_whitelist(channel_id, user_id, client=client)
+            await respond(f"Whitelisted <@{user_id}> in this channel.")
+        except Exception as exc:
+            logger.error("Failed to whitelist user", exc_info=exc)
+            await respond("Error whitelisting user.")
         return
 
     action = "add"
@@ -284,21 +354,24 @@ async def handle_member_joined_channel(body, say, logger):
 
     # TODO: send message to channel if channel is invitelocked
 
+    whitelisted = await list_whitelisted(channel_id, client=client)
+    if user_id in whitelisted:
+        return
+
     blam_ok = user_id == ADMIN_ID or not user_id in await list_blammed(
         channel_id, client=client
     )
     # idv
-
+    idv_ok = True
     if (
         blam_ok
         and (level := await get_idv_required_level(channel_id, client=client))
         and level > 0
     ):
-        idv_ok = False
         logger.info("hi")
         is_bot = await user_is_bot(user_id, app.client, logger)
         if is_bot:
-            logger.info("testing idv notfound, skipping kick for bot")
+            logger.info("skipping kick for bot")
             return
         if level == 1:
             idv_ok = await is_idved(user_id, logger)

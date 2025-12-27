@@ -44,6 +44,16 @@ async def ensure_schema(client: Optional[sqlite3.Connection] = None) -> None:
 
                 """
             )
+            # whitelist table
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS channel_whitelist (
+                    channel_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    PRIMARY KEY (channel_id, user_id)
+                );
+                """
+            )
             db.commit()
 
     await asyncio.to_thread(_create)
@@ -138,3 +148,53 @@ async def remove_blam(
             db.commit()
 
     await asyncio.to_thread(_exec)
+
+
+async def add_whitelist(
+    channel_id: str,
+    user_id: str,
+    client: Optional[sqlite3.Connection] = None,
+) -> None:
+    db = client or get_client()
+
+    def _exec():
+        with _db_lock:
+            db.execute(
+                "INSERT OR IGNORE INTO channel_whitelist (channel_id, user_id) VALUES (?, ?);",
+                (channel_id, user_id),
+            )
+            db.commit()
+
+    await asyncio.to_thread(_exec)
+
+
+async def remove_whitelist(
+    channel_id: str, user_id: str, client: Optional[sqlite3.Connection] = None
+) -> None:
+    db = client or get_client()
+
+    def _exec():
+        with _db_lock:
+            db.execute(
+                "DELETE FROM channel_whitelist WHERE channel_id = ? AND user_id = ?;",
+                (channel_id, user_id),
+            )
+            db.commit()
+
+    await asyncio.to_thread(_exec)
+
+
+async def list_whitelisted(
+    channel_id: str, client: Optional[sqlite3.Connection] = None
+) -> List[str]:
+    db = client or get_client()
+
+    def _query():
+        with _db_lock:
+            cur = db.execute(
+                "SELECT user_id FROM channel_whitelist WHERE channel_id = ?;",
+                (channel_id,),
+            )
+            return [str(row[0]) for row in cur.fetchall()]
+
+    return await asyncio.to_thread(_query)
