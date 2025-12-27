@@ -1,0 +1,17 @@
+services:
+  channelblam:
+    build: .
+    restart: unless-stopped
+    environment:
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
+      - SLACK_PERSONAL_TOKEN=${SLACK_PERSONAL_TOKEN}
+      - SLACK_XOXC=${SLACK_XOXC}
+      - SLACK_XOXD=${SLACK_XOXD}
+      - DB_PATH=/data/channelblam.db
+    volumes:
+      - db-data:/data
+
+volumes:
+  db-data:

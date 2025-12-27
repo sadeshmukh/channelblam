@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sqlite3
 import threading
 from functools import lru_cache
@@ -7,7 +8,10 @@ from typing import List, Optional
 
 @lru_cache(maxsize=1)
 def get_client() -> sqlite3.Connection:
-    conn = sqlite3.connect("channelblam.db", check_same_thread=False)
+    db_path = os.getenv("DB_PATH", "channelblam.db")
+    if directory := os.path.dirname(db_path):
+        os.makedirs(directory, exist_ok=True)
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
