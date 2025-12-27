@@ -48,5 +48,23 @@ async def is_idved_under18(userid: str, logger) -> bool:
     return await idvstatus(userid, logger) == "verified_eligible"
 
 
-async def idv_notfound(userid: str, logger) -> bool:
-    return await idvstatus(userid, logger) == "not_found"
+botcache = set()
+usercache = set()
+
+
+async def user_is_bot(userid: str, client, logger) -> bool:
+    if userid in botcache:
+        return True
+    if userid in usercache:
+        return False
+    try:
+        userinfo = await client.users_info(user=userid)
+        is_bot = userinfo.get("user", {}).get("is_bot", False)
+        if is_bot:
+            botcache.add(userid)
+        else:
+            usercache.add(userid)
+        return is_bot
+    except Exception as e:
+        logger.error(f"Error fetching user info for {userid}: {e}")
+        return False

@@ -19,7 +19,7 @@ from db import (
     set_idv_required_level,
 )
 
-from idv import idv_notfound, idvstatus, is_idved, is_idved_under18
+from idv import is_idved, is_idved_under18, user_is_bot
 
 db_client = None  # main
 ADMIN_ID = None
@@ -205,8 +205,7 @@ async def handle_blam(ack, respond, command, logger):
                     if not cursor:
                         break
                 for user_id in users:
-                    userinfo = await app.client.users_info(user=user_id)
-                    is_bot = userinfo.get("user", {}).get("is_bot", False)
+                    is_bot = await user_is_bot(user_id, app.client, logger)
                     if is_bot:
                         continue
 
@@ -290,11 +289,14 @@ async def handle_member_joined_channel(body, say, logger):
     )
     # idv
 
-    if (level := await get_idv_required_level(channel_id, client=client)) and level > 0:
+    if (
+        blam_ok
+        and (level := await get_idv_required_level(channel_id, client=client))
+        and level > 0
+    ):
         idv_ok = False
         logger.info("hi")
-        userinfo = await app.client.users_info(user=user_id)
-        is_bot = userinfo.get("user", {}).get("is_bot", False)
+        is_bot = await user_is_bot(user_id, app.client, logger)
         if is_bot:
             logger.info("testing idv notfound, skipping kick for bot")
             return
