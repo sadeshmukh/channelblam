@@ -205,7 +205,9 @@ async def handle_blam(ack, respond, command, logger):
                     if not cursor:
                         break
                 for user_id in users:
-                    if await idvstatus(user_id, logger) == "not_found":
+                    userinfo = await app.client.users_info(user=user_id)
+                    is_bot = userinfo.get("user", {}).get("is_bot", False)
+                    if is_bot:
                         continue
 
                     if user_id == ADMIN_ID:
@@ -291,7 +293,9 @@ async def handle_member_joined_channel(body, say, logger):
     if (level := await get_idv_required_level(channel_id, client=client)) and level > 0:
         idv_ok = False
         logger.info("hi")
-        if await idv_notfound(user_id, logger):
+        userinfo = await app.client.users_info(user=user_id)
+        is_bot = userinfo.get("user", {}).get("is_bot", False)
+        if is_bot:
             logger.info("testing idv notfound, skipping kick for bot")
             return
         if level == 1:
