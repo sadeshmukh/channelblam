@@ -13,7 +13,6 @@ from db import (
     add_blam,
     ensure_schema,
     get_client,
-    # get_user_token,
     list_blammed,
     remove_blam,
 )

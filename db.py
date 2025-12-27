@@ -32,15 +32,6 @@ async def ensure_schema(client: Optional[sqlite3.Connection] = None) -> None:
             )
             db.execute(
                 """
-                CREATE TABLE IF NOT EXISTS channel_managers (
-                    channel_id TEXT PRIMARY KEY,
-                    manager_user_id TEXT NOT NULL,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-                """
-            )
-            db.execute(
-                """
                 CREATE TABLE IF NOT EXISTS oauth_tokens (
                     team_id TEXT PRIMARY KEY,
                     user_token TEXT NOT NULL,
@@ -98,66 +89,6 @@ async def list_blammed(
             return [str(row[0]) for row in cur.fetchall()]
 
     return await asyncio.to_thread(_query)
-
-
-async def get_managing_user(
-    channel_id: str, client: Optional[sqlite3.Connection] = None
-) -> str | None:
-    db = client or get_client()
-
-    def _query():
-        with _db_lock:
-            cur = db.execute(
-                "SELECT manager_user_id FROM channel_managers WHERE channel_id = ?;",
-                (channel_id,),
-            )
-            row = cur.fetchone()
-            return str(row[0]) if row else None
-
-    return await asyncio.to_thread(_query)
-
-
-# async def set_user_token(
-#     team_id: str,
-#     user_token: str,
-#     installer_user_id: Optional[str] = None,
-#     client: Optional[sqlite3.Connection] = None,
-# ) -> None:
-#     db = client or get_client()
-
-#     def _exec():
-#         with _db_lock:
-#             db.execute(
-#                 """
-#                 INSERT INTO oauth_tokens (team_id, user_token, installer_user_id)
-#                 VALUES (?, ?, ?)
-#                 ON CONFLICT(team_id) DO UPDATE SET
-#                     user_token=excluded.user_token,
-#                     installer_user_id=excluded.installer_user_id,
-#                     updated_at=CURRENT_TIMESTAMP;
-#                 """,
-#                 (team_id, user_token, installer_user_id),
-#             )
-#             db.commit()
-
-#     await asyncio.to_thread(_exec)
-
-
-# async def get_user_token(
-#     team_id: str, client: Optional[sqlite3.Connection] = None
-# ) -> Optional[str]:
-#     db = client or get_client()
-
-#     def _query():
-#         with _db_lock:
-#             cur = db.execute(
-#                 "SELECT user_token FROM oauth_tokens WHERE team_id = ?;",
-#                 (team_id,),
-#             )
-#             row = cur.fetchone()
-#             return str(row[0]) if row else None
-
-#     return await asyncio.to_thread(_query)
 
 
 async def remove_blam(
