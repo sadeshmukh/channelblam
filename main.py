@@ -80,6 +80,20 @@ async def _is_channel_manager(channel_id: str, user_id: str | None, logger) -> b
 _USER_ID_RE = re.compile(r"^[UW][A-Z0-9]{2,}$")
 
 
+HELP_TEXT = (
+    "CHANNELBLAM commands:\n"
+    "- /blam @user — blam and kick a user.\n"
+    "- /blam add @user — same as above.\n"
+    "- /blam remove @user — unblam a user.\n"
+    "- /blam list — list blammed users in this channel.\n"
+    "- /blam idv [required|under18|off] — set IDV requirement.\n"
+    "- /blam idv test [required|under18|off] — show how many would be kicked for that setting.\n"
+    "- /blam whitelist @user — whitelist a user (exempt from blam/IDV).\n"
+    "- /blam whitelist remove @user — remove a user from whitelist.\n"
+    "- /blam whitelist channel — whitelist everyone currently in the channel.\n"
+)
+
+
 def _parse_mention(token: str) -> str | None:
     if not (token.startswith("<@") and token.endswith(">")):
         return None
@@ -127,9 +141,7 @@ async def handle_blam(ack, respond, command, logger):
         return
     tokens = text.split()
     if not tokens:
-        await respond(
-            "Usage: /blam @user | /blam remove @user | /blam list | /blam idv"
-        )
+        await respond(HELP_TEXT)
         return
 
     if channel_id.startswith("C"):
@@ -143,6 +155,10 @@ async def handle_blam(ack, respond, command, logger):
                 return
 
     first = tokens[0].lower()
+
+    if first in {"help", "usage"}:
+        await respond(HELP_TEXT)
+        return
 
     if first == "list":
         try:
@@ -158,7 +174,75 @@ async def handle_blam(ack, respond, command, logger):
             await respond("Error listing blammed users.")
         return
     if first == "idv":
-        level = tokens[1].lower() if len(tokens) > 1 else "required"
+        subcmd = tokens[1].lower() if len(tokens) > 1 else "required"
+
+        if subcmd == "test":
+            level = tokens[2].lower() if len(tokens) > 2 else "required"
+
+            if level not in {"required", "under18", "off"}:
+                await respond(
+                    "Usage: /blam idv test [required/under18/off], defaults to required"
+                )
+                return
+
+            match level:
+                case "off":
+                    levelnum = 0
+                case "required":
+                    levelnum = 1
+                case "under18":
+                    levelnum = 2
+                case default:
+                    levelnum = 1
+
+            try:
+                client = _db_client()
+                users = []
+                cursor = None
+                while True:
+                    result = await app.client.conversations_members(
+                        channel=channel_id, cursor=cursor, limit=1000
+                    )
+                    members = result.get("members", []) or []
+                    users.extend(members)
+                    cursor = result.get("response_metadata", {}).get("next_cursor")
+                    if not cursor:
+                        break
+
+                whitelisted = set(await list_whitelisted(channel_id, client=client))
+
+                to_kick = 0
+                for user_id in users:
+                    if user_id == ADMIN_ID:
+                        continue
+
+                    if user_id in whitelisted:
+                        continue
+
+                    is_bot = await user_is_bot(user_id, app.client, logger)
+                    if is_bot:
+                        continue
+
+                    if levelnum == 0:
+                        continue
+
+                    if levelnum == 1 and not await is_idved(user_id, logger):
+                        to_kick += 1
+                        continue
+
+                    if levelnum == 2 and not await is_idved_under18(user_id, logger):
+                        to_kick += 1
+
+                await respond(
+                    f"{to_kick} users would be kicked if IDV requirement were set to {level}."
+                )
+            except Exception as exc:
+                logger.error("Failed to test IDV requirement", exc_info=exc)
+                await respond("Error testing IDV requirement.")
+
+            return
+
+        level = subcmd
 
         if level not in {"required", "under18", "off"}:
             await respond(
