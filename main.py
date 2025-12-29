@@ -23,16 +23,20 @@ from db import (
 )
 
 from idv import is_idved, is_idved_under18, user_is_bot
+from utils import (
+    _is_channel_manager,
+    _list_channel_managers,
+    _parse_mention,
+    _is_valid_userid,
+    _env,
+    _allow_channel_post,
+    _prevent_channel_post,
+    _initialize_channel_post,
+)
 
 db_client = None  # main
 ADMIN_ID = None
 BOT_USER_ID = None
-
-
-def _env(name: str) -> str:
-    if not (value := os.getenv(name)):
-        raise RuntimeError(f"Missing required env var: {name}")
-    return value
 
 
 logging.basicConfig(
@@ -52,34 +56,6 @@ def _db_client():
     return db_client
 
 
-async def _is_channel_manager(channel_id: str, user_id: str | None, logger) -> bool:
-    if not user_id:
-        return False
-    cursor = None
-    while True:
-        try:
-            result = await app.client.conversations_members(
-                channel=channel_id,
-                cursor=cursor,
-                limit=1000,  # this limit is quite meaningless
-            )
-        except SlackApiError as exc:
-            logger.warning("Failed to fetch channel managers", exc_info=exc)
-            break
-
-        members = result.get("members", []) or []
-        if user_id in members:
-            return True
-
-        cursor = result.get("response_metadata", {}).get("next_cursor")
-        if not cursor:
-            break
-    return False
-
-
-_USER_ID_RE = re.compile(r"^[UW][A-Z0-9]{2,}$")
-
-
 HELP_TEXT = (
     "CHANNELBLAM commands:\n"
     "- /blam @user — blam and kick a user.\n"
@@ -92,16 +68,6 @@ HELP_TEXT = (
     "- /blam whitelist remove @user — remove a user from whitelist.\n"
     "- /blam whitelist channel — whitelist everyone currently in the channel.\n"
 )
-
-
-def _parse_mention(token: str) -> str | None:
-    if not (token.startswith("<@") and token.endswith(">")):
-        return None
-    inner = token[2:-1]
-    user_id = inner.split("|", 1)[0]
-    if not _USER_ID_RE.match(user_id):
-        return None
-    return user_id
 
 
 @app.command("/blam")
@@ -289,13 +255,16 @@ async def handle_blam(ack, respond, command, logger):
                     if not cursor:
                         break
                 for user_id in users:
-                    is_bot = await user_is_bot(user_id, app.client, logger)
-                    if is_bot:
+                    if user_id == ADMIN_ID:
                         continue
                     is_whitelisted = await list_whitelisted(channel_id, client=client)
                     if user_id in is_whitelisted:
                         continue
-                    if user_id == ADMIN_ID:
+                    is_bot = await user_is_bot(user_id, app.client, logger)
+                    if is_bot:
+                        continue
+                    managers = await _list_channel_managers(channel_id, app)
+                    if user_id in managers:
                         continue
                     if levelnum == 1 and not await is_idved(user_id, logger):
                         toblam.append(user_id)
@@ -305,12 +274,14 @@ async def handle_blam(ack, respond, command, logger):
                         continue
                 # for user_id in toblam:
                 #     await _kick_if_possible(channel_id, user_id, logger)
+                managers = await _list_channel_managers(channel_id, app)
                 await asyncio.gather(
                     *(
-                        _kick_if_possible(channel_id, user_id, logger)
+                        _kick_if_possible(channel_id, user_id, logger, bulk=True)
                         for user_id in toblam
                     )
                 )
+                await _prevent_channel_post(channel_id, toblam, app)
                 logger.info(
                     f"Kicked {len(toblam)} blammed users from channel {channel_id} due to IDV requirement change"
                 )
@@ -358,7 +329,7 @@ async def handle_blam(ack, respond, command, logger):
                 return
             user_id = tokens[2].split("|", 1)[0] if len(tokens) > 2 else ""
 
-            if not _USER_ID_RE.match(user_id):
+            if not _is_valid_userid(user_id):
                 await respond(
                     "Please mention a user, e.g., /blam whitelist remove @user"
                 )
@@ -371,7 +342,7 @@ async def handle_blam(ack, respond, command, logger):
                 logger.error("Failed to remove whitelist", exc_info=exc)
                 await respond("Error removing whitelist.")
         user_id = second.split("|", 1)[0] if len(tokens) > 1 else ""
-        if not _USER_ID_RE.match(user_id):
+        if not _is_valid_userid(user_id):
             await respond("Please mention a user, e.g., /blam whitelist @user")
             return
         try:
@@ -394,6 +365,9 @@ async def handle_blam(ack, respond, command, logger):
         await respond("Please mention a user, e.g., /blam @user")
         return
     target_user = _parse_mention(tokens[mention_token_idx])
+    if target_user == command.get("user_id"):
+        await respond(":neocat_floof_explode: Don't blam yourself.")
+        return
     if not target_user:
         await respond("Please mention a user, e.g., /blam @user")
         return
@@ -459,7 +433,8 @@ async def handle_member_joined_channel(body, say, logger):
         elif level == 2:
             idv_ok = await is_idved_under18(user_id, logger)
 
-    if blam_ok and idv_ok:
+    if user_id == ADMIN_ID or (blam_ok and idv_ok):
+        await _allow_channel_post(channel_id, [user_id])
         return
     try:
         await _kick_if_possible(channel_id, user_id, logger)
@@ -468,9 +443,13 @@ async def handle_member_joined_channel(body, say, logger):
         logger.error("Failed to kick blammed user", exc_info=exc)
 
 
-async def _kick_if_possible(channel_id: str, user_id: str, logger) -> None:
+async def _kick_if_possible(
+    channel_id: str, user_id: str, logger, *, bulk: bool = False
+) -> None:
     try:
         await _kick_xoxc(channel_id, user_id, logger)
+        if not bulk:
+            await _prevent_channel_post(channel_id, [user_id], app)
         return
     except Exception as exc:
         logger.warning("Kick xoxc failed", exc_info=exc)
@@ -546,7 +525,7 @@ async def handle_member_left_channel(body, logger):
     if not channel_id or not user_id:
         return
 
-    if await _is_channel_manager(channel_id, actor_id, logger):
+    if await _is_channel_manager(channel_id, actor_id, app):
         return
 
     if BOT_USER_ID and user_id == BOT_USER_ID:
