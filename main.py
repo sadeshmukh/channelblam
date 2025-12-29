@@ -1,5 +1,11 @@
 import asyncio
 import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
 import os
 import re
 
@@ -37,12 +43,6 @@ from utils import (
 db_client = None  # main
 ADMIN_ID = None
 BOT_USER_ID = None
-
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 
 app = AsyncApp(
     token=_env("SLACK_BOT_TOKEN"),
