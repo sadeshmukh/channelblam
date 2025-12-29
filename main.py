@@ -73,6 +73,11 @@ HELP_TEXT = (
 @app.command("/blam")
 async def handle_blam(ack, respond, command, logger):
     await ack()
+
+    if (command.get("text") or "").strip().split()[0] in {"help", "usage"}:
+        await respond(HELP_TEXT)
+        return
+
     channel_id = command.get("channel_id")
 
     # region Authorization check
@@ -121,10 +126,6 @@ async def handle_blam(ack, respond, command, logger):
                 return
 
     first = tokens[0].lower()
-
-    if first in {"help", "usage"}:
-        await respond(HELP_TEXT)
-        return
 
     if first == "list":
         try:
