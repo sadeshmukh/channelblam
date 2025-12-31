@@ -73,6 +73,7 @@ HELP_TEXT = (
 @app.command("/blam")
 async def handle_blam(ack, respond, command, logger):
     await ack()
+    return
 
     if (command.get("text") or "").strip().split()[0] in {"help", "usage"}:
         await respond(HELP_TEXT)
@@ -402,6 +403,11 @@ async def handle_member_joined_channel(body, say, logger):
     # remove perms only on the authed user, so we've got to do the whole invite shenanigans
     if user_id == body.get("authorizations", [{}])[0].get("user_id"):  # self check
         try:
+            bclient = AsyncWebClient(token=_env("SLACK_BOT_TOKEN"))
+            await bclient.chat_postMessage(
+                channel=channel_id,
+                text="Hello! We've migrated over to a new bot, @BLAMV2. Please invite that bot to the channel.",
+            )
             await AsyncWebClient(token=_env("SLACK_BOT_TOKEN")).conversations_invite(
                 channel=channel_id, users=str(ADMIN_ID)
             )
