@@ -1,3 +1,5 @@
+# CHANNELBLAM has been superseeded by [blamv2](https://github.com/sadeshmukh/blamv2). This repository will not be maintained.
+
 # CHANNELBLAM
 
 See that user in Slack? BLAM. Now you don't. How about locking your channel to IDV-verified members entirely? BLAM. It's done.
